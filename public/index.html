@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<title>Painel CRM</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #1a1a1a; color: #eee; }
+  .card { background: #262626; border-radius: 8px; padding: 16px; }
+  .campo { margin-bottom: 10px; }
+  .rotulo { font-size: 12px; color: #999; text-transform: uppercase; }
+  .valor { font-size: 15px; }
+  a { color: #7dd3fc; }
+  .estado { color: #999; font-size: 13px; }
+  .debug { margin-top: 16px; font-size: 11px; color: #666; white-space: pre-wrap; word-break: break-all; }
+</style>
+</head>
+<body>
+  <div id="conteudo" class="estado">Aguardando o Chatwoot enviar o contexto da conversa...</div>
+  <div id="debug" class="debug"></div>
+
+<script>
+  // Lê o client_id da própria URL com que este painel foi registrado no Chatwoot,
+  // ex: https://painel-crm.srv1885364.hstgr.cloud/?client=ww-assessoria
+  const params = new URLSearchParams(window.location.search);
+  const clientId = params.get('client');
+
+  const conteudo = document.getElementById('conteudo');
+  const debugEl = document.getElementById('debug');
+  const MOSTRAR_DEBUG = params.get('debug') === '1';
+
+  function mostrarDebug(dado) {
+    if (MOSTRAR_DEBUG) {
+      debugEl.textContent = 'Debug (payload recebido do Chatwoot):\n' + JSON.stringify(dado, null, 2);
+    }
+  }
+
+  function extrairContato(payload) {
+    // A forma exata do payload que o Chatwoot manda ainda não foi confirmada
+    // ao vivo -- essa função tenta alguns formatos conhecidos/documentados.
+    // Ative ?debug=1 na URL pra ver o payload real e ajustar se necessário.
+    const d = payload?.data ?? payload;
+    const contact = d?.contact ?? d?.conversation?.meta?.sender ?? d?.currentConversation?.meta?.sender;
+    if (!contact) return null;
+    return {
+      phone: contact.phone_number || contact.phoneNumber || null,
+      email: contact.email || null
+    };
+  }
+
+  async function buscarContato(phone, email) {
+    if (!clientId) {
+      conteudo.textContent = 'Erro: URL do painel não tem o parâmetro ?client=... configurado.';
+      return;
+    }
+    const qs = new URLSearchParams({ client: clientId });
+    if (phone) qs.set('phone', phone);
+    if (email) qs.set('email', email);
+
+    conteudo.textContent = 'Buscando no Twenty CRM...';
+
+    try {
+      const resp = await fetch('/api/contact?' + qs.toString());
+      const dado = await resp.json();
+
+      if (!resp.ok) {
+        conteudo.textContent = dado.error || 'Contato não encontrado.';
+        return;
+      }
+
+      conteudo.innerHTML = `
+        <div class="card">
+          <div class="campo"><div class="rotulo">Nome</div><div class="valor">${dado.nome}</div></div>
+          <div class="campo"><div class="rotulo">Etapa do funil</div><div class="valor">${dado.etapaFunil ?? '—'}</div></div>
+          <div class="campo"><div class="rotulo">Última atividade</div><div class="valor">${dado.ultimaAtividade ?? '—'}</div></div>
+          <div class="campo"><a href="${dado.linkTwenty}" target="_blank" rel="noopener">Abrir no Twenty CRM →</a></div>
+        </div>
+      `;
+    } catch (e) {
+      conteudo.textContent = 'Erro ao consultar o painel: ' + e.message;
+    }
+  }
+
+  window.addEventListener('message', (event) => {
+    mostrarDebug(event.data);
+    const contato = extrairContato(event.data);
+    if (contato && (contato.phone || contato.email)) {
+      buscarContato(contato.phone, contato.email);
+    }
+  });
+</script>
+</body>
+</html>
