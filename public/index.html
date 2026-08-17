@@ -53,8 +53,11 @@
     const d = payload?.data ?? payload;
     const contact = d?.contact ?? d?.conversation?.meta?.sender ?? d?.currentConversation?.meta?.sender;
     if (!contact) return null;
+    // Confirmado ao vivo (16/08): contatos criados pela ponte WhatsApp (Channel::Api)
+    // guardam o telefone em "identifier", não em "phone_number" -- esse campo só vem
+    // preenchido em canais WhatsApp nativos do Chatwoot, que não é o nosso caso.
     return {
-      phone: contact.phone_number || contact.phoneNumber || null,
+      phone: contact.phone_number || contact.phoneNumber || contact.identifier || null,
       email: contact.email || null
     };
   }
