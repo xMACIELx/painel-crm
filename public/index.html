@@ -34,10 +34,22 @@
     }
   }
 
+  function ehJsonValido(texto) {
+    if (typeof texto !== 'string') return false;
+    try {
+      JSON.parse(texto);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function extrairContato(payload) {
-    // A forma exata do payload que o Chatwoot manda ainda não foi confirmada
-    // ao vivo -- essa função tenta alguns formatos conhecidos/documentados.
-    // Ative ?debug=1 na URL pra ver o payload real e ajustar se necessário.
+    // Formato confirmado na documentação do Chatwoot:
+    // { "event": "appContext", "data": { "conversation": {...}, "contact": {...}, "currentAgent": {...} } }
+    // O Chatwoot manda contato tanto em data.contact quanto em data.conversation.meta.sender
+    // (varia conforme a versão/canal), então checamos os dois. Também cobre camelCase
+    // (app mobile manda inboxId/phoneNumber em vez de inbox_id/phone_number).
     const d = payload?.data ?? payload;
     const contact = d?.contact ?? d?.conversation?.meta?.sender ?? d?.currentConversation?.meta?.sender;
     if (!contact) return null;
@@ -81,12 +93,28 @@
   }
 
   window.addEventListener('message', (event) => {
-    mostrarDebug(event.data);
-    const contato = extrairContato(event.data);
+    // O Chatwoot manda event.data como STRING JSON, não como objeto direto.
+    // (Além disso, o navegador pode entregar mensagens de outras origens, como
+    // extensões do Chrome -- por isso o filtro ehJsonValido antes de qualquer coisa.)
+    if (!ehJsonValido(event.data)) {
+      mostrarDebug({ ignorado_nao_json: event.data });
+      return;
+    }
+    const eventData = JSON.parse(event.data);
+    mostrarDebug(eventData);
+
+    if (eventData.event !== 'appContext') return;
+
+    const contato = extrairContato(eventData);
     if (contato && (contato.phone || contato.email)) {
       buscarContato(contato.phone, contato.email);
     }
   });
+
+  // Pede o contexto ativamente ao carregar: cobre o caso da aba ser aberta/recarregada
+  // DEPOIS do Chatwoot já ter mandado o appContext inicial (ele não reenvia sozinho
+  // nesse caso). Chatwoot responde a essa chave com o payload atualizado.
+  window.parent.postMessage('chatwoot-dashboard-app:fetch-info', '*');
 </script>
 </body>
 </html>
