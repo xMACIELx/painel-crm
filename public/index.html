@@ -4,13 +4,21 @@
 <meta charset="UTF-8" />
 <title>Painel CRM</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #1a1a1a; color: #eee; }
+  html, body { height: 100%; margin: 0; }
+  body { font-family: system-ui, sans-serif; padding: 16px; background: #1a1a1a; color: #eee; box-sizing: border-box; }
+  body.modo-iframe { padding: 0; }
+  #conteudo { min-height: calc(100% - 32px); }
+  body.modo-iframe #conteudo { min-height: 100%; }
   .card { background: #262626; border-radius: 8px; padding: 16px; }
-  .campo { margin-bottom: 10px; }
-  .rotulo { font-size: 12px; color: #999; text-transform: uppercase; }
-  .valor { font-size: 15px; }
-  a { color: #7dd3fc; }
   .estado { color: #999; font-size: 13px; }
+  .botao { background: #7dd3fc; color: #111; border: none; border-radius: 6px; padding: 10px 16px; font-size: 14px; cursor: pointer; }
+  .botao:disabled { opacity: 0.6; cursor: default; }
+  a { color: #7dd3fc; }
+  .lista-duplicados { list-style: none; padding: 0; margin: 12px 0; }
+  .lista-duplicados li { padding: 8px 0; border-bottom: 1px solid #333; }
+  .lista-duplicados li:last-child { border-bottom: none; }
+  .aviso { font-size: 13px; color: #ccc; margin-top: 12px; }
+  .twenty-frame { width: 100%; height: 100%; border: 0; display: block; }
   .debug { margin-top: 16px; font-size: 11px; color: #666; white-space: pre-wrap; word-break: break-all; }
 </style>
 </head>
@@ -44,6 +52,12 @@
     }
   }
 
+  function escapeHtml(texto) {
+    const div = document.createElement('div');
+    div.textContent = texto ?? '';
+    return div.innerHTML;
+  }
+
   function extrairContato(payload) {
     // Formato confirmado na documentação do Chatwoot:
     // { "event": "appContext", "data": { "conversation": {...}, "contact": {...}, "currentAgent": {...} } }
@@ -57,13 +71,86 @@
     // guardam o telefone em "identifier", não em "phone_number" -- esse campo só vem
     // preenchido em canais WhatsApp nativos do Chatwoot, que não é o nosso caso.
     return {
+      nome: contact.name || null,
       phone: contact.phone_number || contact.phoneNumber || contact.identifier || null,
       email: contact.email || null
     };
   }
 
-  async function buscarContato(phone, email) {
+  function mostrarIframe(url) {
+    document.body.classList.add('modo-iframe');
+    conteudo.innerHTML = `<iframe class="twenty-frame" src="${url}"></iframe>`;
+  }
+
+  function urlListaPeople(linkDeExemplo) {
+    return linkDeExemplo.replace(/\/object\/person\/.*$/, '/objects/people');
+  }
+
+  function mostrarDuplicados(matches) {
+    document.body.classList.remove('modo-iframe');
+    const itens = matches
+      .map(
+        (m) =>
+          `<li>${escapeHtml(m.nome)} — <a href="${m.linkTwenty}" target="_blank" rel="noopener">abrir no Twenty →</a></li>`
+      )
+      .join('');
+    conteudo.innerHTML = `
+      <div class="card">
+        <ul class="lista-duplicados">${itens}</ul>
+        <div class="aviso">
+          Múltiplos contatos encontrados com esse telefone. Use a função de Merge do
+          Twenty: selecione os registros na
+          <a href="${urlListaPeople(matches[0].linkTwenty)}" target="_blank" rel="noopener">lista de People</a>
+          e escolha Mesclar.
+        </div>
+      </div>
+    `;
+  }
+
+  function mostrarBotaoCadastrar(nome, phone) {
+    document.body.classList.remove('modo-iframe');
+
+    if (!phone) {
+      conteudo.innerHTML = `
+        <div class="card">
+          <div class="estado">Nenhum contato encontrado no Twenty CRM e este contato não tem telefone identificado — cadastre manualmente.</div>
+        </div>
+      `;
+      return;
+    }
+
+    conteudo.innerHTML = `
+      <div class="card">
+        <div class="estado" style="margin-bottom: 12px;">Nenhum contato encontrado no Twenty CRM.</div>
+        <button id="btnCadastrar" class="botao">Cadastrar no Twenty CRM</button>
+      </div>
+    `;
+
+    document.getElementById('btnCadastrar').addEventListener('click', async (ev) => {
+      const btn = ev.target;
+      btn.disabled = true;
+      btn.textContent = 'Cadastrando...';
+      try {
+        const resp = await fetch('/api/contact/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client: clientId, nome: nome || 'Sem nome', telefone: phone })
+        });
+        const dado = await resp.json();
+        if (!resp.ok) {
+          conteudo.innerHTML = `<div class="estado">Erro ao cadastrar: ${escapeHtml(dado.error || String(resp.status))}</div>`;
+          return;
+        }
+        mostrarIframe(dado.linkTwenty);
+      } catch (e) {
+        conteudo.innerHTML = `<div class="estado">Erro ao cadastrar: ${escapeHtml(e.message)}</div>`;
+      }
+    });
+  }
+
+  async function buscarContato(nome, phone, email) {
     if (!clientId) {
+      document.body.classList.remove('modo-iframe');
       conteudo.textContent = 'Erro: URL do painel não tem o parâmetro ?client=... configurado.';
       return;
     }
@@ -71,6 +158,7 @@
     if (phone) qs.set('phone', phone);
     if (email) qs.set('email', email);
 
+    document.body.classList.remove('modo-iframe');
     conteudo.textContent = 'Buscando no Twenty CRM...';
 
     try {
@@ -78,18 +166,19 @@
       const dado = await resp.json();
 
       if (!resp.ok) {
-        conteudo.textContent = dado.error || 'Contato não encontrado.';
+        conteudo.textContent = dado.error || 'Erro ao buscar contato.';
         return;
       }
 
-      conteudo.innerHTML = `
-        <div class="card">
-          <div class="campo"><div class="rotulo">Nome</div><div class="valor">${dado.nome}</div></div>
-          <div class="campo"><div class="rotulo">Etapa do funil</div><div class="valor">${dado.etapaFunil ?? '—'}</div></div>
-          <div class="campo"><div class="rotulo">Última atividade</div><div class="valor">${dado.ultimaAtividade ?? '—'}</div></div>
-          <div class="campo"><a href="${dado.linkTwenty}" target="_blank" rel="noopener">Abrir no Twenty CRM →</a></div>
-        </div>
-      `;
+      const matches = dado.matches || [];
+
+      if (matches.length === 0) {
+        mostrarBotaoCadastrar(nome, phone);
+      } else if (matches.length === 1) {
+        mostrarIframe(matches[0].linkTwenty);
+      } else {
+        mostrarDuplicados(matches);
+      }
     } catch (e) {
       conteudo.textContent = 'Erro ao consultar o painel: ' + e.message;
     }
@@ -110,7 +199,7 @@
 
     const contato = extrairContato(eventData);
     if (contato && (contato.phone || contato.email)) {
-      buscarContato(contato.phone, contato.email);
+      buscarContato(contato.nome, contato.phone, contato.email);
     }
   });
 
