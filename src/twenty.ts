@@ -39,22 +39,22 @@ function pessoaBate(p: TwentyPerson, telefoneNormalizado?: string, emailNormaliz
 }
 
 /**
- * Tenta a busca filtrada server-side (`filter=campo[operador]:valor`, sintaxe
- * documentada da API do Twenty, com `or(...)` pra combinar telefone e e-mail).
+ * Busca filtrada server-side. Sintaxe CONFIRMADA ao vivo em 18/08 contra a
+ * instância real (`https://twenty.srv1885364.hstgr.cloud`, com um contato de
+ * teste "Maria Eduarda"): `filter=campo[operador]:"valor"`, `like` com `%`
+ * como wildcard SQL pra telefone, `eq` pra e-mail, `or(...)` combinando os
+ * dois. Ex. testado: `filter=phones.primaryPhoneNumber[like]:"%92065308%"`
+ * devolveu só a Maria (totalCount:1); um número inexistente devolveu
+ * totalCount:0 — não é filtro decorativo, filtra de verdade.
  *
- * NÃO CONFIRMADA AO VIVO — não há como alcançar nem o Postgres interno
- * (n8n-postgres-data só existe na rede docker da VPS) nem um token válido do
- * Twenty a partir do ambiente onde este código foi escrito. Pra confirmar,
- * rode contra a instância real:
+ * A sintaxe alternativa com colchetes (`filter[phones.primaryPhoneNumber][contains]=...`)
+ * NÃO funciona: a API responde 200 mas ignora o filtro e devolve tudo. Por
+ * isso buscarContatosPorTelefoneOuEmail revalida todo resultado no cliente
+ * antes de considerar match — mesmo com a sintaxe certa, é uma rede de
+ * segurança barata contra a API silenciosamente devolvendo mais do que devia.
  *
- *   curl "$TWENTY_URL/rest/people?filter=phones.primaryPhoneNumber%5Blike%5D:%22%25SEUS8DIGITOS%25%22" \
- *     -H "Authorization: Bearer $TWENTY_TOKEN"
- *
- * Se a sintaxe estiver errada, a API deve devolver 400 e o chamador cai pro
- * fallback (buscarPessoasSemFiltro). E mesmo que a API devolva 200 mas ignore
- * o filtro (pior caso: manda a lista inteira sem filtrar), buscarContatosPorTelefoneOuEmail
- * revalida cada resultado no cliente antes de considerar match — então um
- * filtro que não funciona de verdade só custa performance, nunca corretude.
+ * Ainda assim mantém o fallback abaixo pra qualquer 4xx/5xx real (ex: campo
+ * renomeado numa atualização futura do Twenty).
  */
 async function buscarPessoasFiltradas(
   crmBaseUrl: string,
@@ -64,7 +64,7 @@ async function buscarPessoasFiltradas(
 ): Promise<TwentyPerson[] | null> {
   const condicoes: string[] = [];
   const ultimos8 = telefoneNormalizado?.slice(-8);
-  if (ultimos8) condicoes.push(`phones.primaryPhoneNumber[like]:"%25${ultimos8}%25"`);
+  if (ultimos8) condicoes.push(`phones.primaryPhoneNumber[like]:"%${ultimos8}%"`);
   if (emailNormalizado) condicoes.push(`emails.primaryEmail[eq]:"${emailNormalizado}"`);
   if (condicoes.length === 0) return [];
 
@@ -145,13 +145,14 @@ function normalizarTelefoneBr(telefone: string): string {
  * campos (e-mail, empresa etc.) ficam em branco pro comercial preencher
  * depois direto no Twenty.
  *
- * Formato do campo `phones` (primaryPhoneNumber + primaryPhoneCountryCode)
- * NÃO CONFIRMADO AO VIVO, pelo mesmo motivo de buscarPessoasFiltradas acima.
- * Antes de confiar nisso em produção, confirme com um GET num contato real
- * que já tem telefone (ex: a Maria Eduarda) e ajuste o body do POST se vier
- * diferente:
- *
- *   curl "$TWENTY_URL/rest/people/{id}" -H "Authorization: Bearer $TWENTY_TOKEN"
+ * Formato do campo `phones` CONFIRMADO ao vivo em 18/08 com um GET num
+ * contato real (Maria Eduarda, cadastrada manualmente com telefone
+ * +55 51 99206-5308): `{ primaryPhoneNumber: "51992065308", primaryPhoneCountryCode: "BR",
+ * primaryPhoneCallingCode: "+55", additionalPhones: [] }` — primaryPhoneNumber
+ * é DDD+número, SEM o código de chamada do país (isso fica em
+ * primaryPhoneCallingCode, campo separado). Não testei o POST de criação em
+ * si (só o GET, como pedido) — se o create rejeitar por faltar
+ * additionalPhones ou outro subcampo, é o próximo lugar a olhar.
  */
 export async function criarContatoStub(
   crmBaseUrl: string,
@@ -172,7 +173,8 @@ export async function criarContatoStub(
       name: { firstName: firstName || dados.nome, lastName },
       phones: {
         primaryPhoneNumber: normalizarTelefoneBr(dados.telefone),
-        primaryPhoneCountryCode: 'BR'
+        primaryPhoneCountryCode: 'BR',
+        primaryPhoneCallingCode: '+55'
       }
     })
   });
